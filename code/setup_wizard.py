@@ -16,6 +16,12 @@ import json
 import os
 import shutil
 import sys
+from urllib.parse import parse_qs, urlparse
+
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
 
 CODE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(CODE)
@@ -23,6 +29,11 @@ CRED = os.path.join(ROOT, "credential", "bili_credential.json")
 CONFIG = os.path.join(ROOT, "config.json")
 EXAMPLE = os.path.join(ROOT, "config.example.json")
 QR = os.path.join(ROOT, "qr-login.png")
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+GEN_API = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
+POLL_API = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
 
 
 def say(text=""):
@@ -43,55 +54,107 @@ def open_file(path):
         say(f"（没能自动打开，你自己看一下：{path}）")
 
 
-async def login_bili():
-    """扫码登录，返回 (credential, uid, name)。"""
-    from bilibili_api.login_v2 import QrCodeLogin, QrCodeLoginEvents
-    from bilibili_api import user
-
-    qr = QrCodeLogin()
-    await qr.generate_qrcode()
-    qr.get_qrcode_picture().to_file(QR)
-    say(f"二维码图片：{QR}")
-    open_file(QR)
-    say("用手机 B 站 App 扫码，然后在手机上点「确认登录」。")
-    say("（关掉图片窗口不影响，这里会等）")
-
-    print("等扫码", end="", flush=True)
-    last = None
-    while True:
-        try:
-            ev = await qr.check_state()
-        except Exception as e:
-            say(f"\n检查状态出错：{type(e).__name__}: {e}")
-            return None
-        if ev == QrCodeLoginEvents.DONE:
-            break
-        if ev == QrCodeLoginEvents.TIMEOUT:
-            say("\n二维码过期，换一张。")
-            await qr.generate_qrcode()
-            qr.get_qrcode_picture().to_file(QR)
-            open_file(QR)
-            print("等扫码", end="", flush=True)
-            last = None
-            continue
-        if ev != last:
-            if ev == QrCodeLoginEvents.CONF:
-                say("\n扫到了，等你在手机上确认…")
-            last = ev
-        print(".", end="", flush=True)
-        await asyncio.sleep(2)
-
-    cred = qr.get_credential()
-    uid = int(getattr(cred, "dedeuserid", 0) or 0)
-    name = ""
+def _cookie(url: str, *names: str) -> str:
+    """从登录回调 URL 里取某个 cookie 的值。"""
     try:
-        info = await user.get_self_info(cred)
-        uid = int(info.get("mid") or uid)
-        name = info.get("uname") or ""
+        q = parse_qs(urlparse(url).query)
     except Exception:
-        pass
-    say(f"\n登录成功：{name or uid}（UID {uid}）")
-    return cred, uid, name
+        return ""
+    for name in names:
+        if name in q and q[name]:
+            return q[name][0]
+    return ""
+
+
+async def login_bili():
+    """扫码登录，返回 (credential, uid, name)。
+
+    不依赖 bilibili_api 的二维码封装，直接走 passport 的两个接口：
+    生成二维码 → 轮询 → 成功后从回调 URL 里取 SESSDATA / bili_jct / DedeUserID。
+    """
+    from bilibili_api import Credential
+    from bilibili_api import user as buser
+
+    if aiohttp is None:
+        say("缺少 aiohttp，先双击 安装依赖.cmd。")
+        return None
+
+    headers = {"User-Agent": UA, "Referer": "https://www.bilibili.com/"}
+    async with aiohttp.ClientSession(headers=headers) as http:
+        try:
+            async with http.get(GEN_API) as r:
+                data = await r.json()
+        except Exception as e:
+            say(f"连不上 B 站：{type(e).__name__}: {e}")
+            return None
+        if not isinstance(data, dict) or data.get("code") != 0:
+            say(f"生成二维码失败：{data}")
+            return None
+        qr_key = data["data"]["qrcode_key"]
+        qr_link = data["data"]["url"]
+
+        try:
+            import qrcode
+            qrcode.make(qr_link).save(QR)
+            say(f"二维码图片：{QR}")
+            open_file(QR)
+        except Exception as e:
+            say(f"（图片没生成出来：{e}）")
+        try:
+            import qrcode_terminal
+            say(qrcode_terminal.draw(qr_link))
+        except Exception as e:
+            say(f"（终端二维码没出来：{e}）")
+
+        say("用手机 B 站 App 扫码，然后在手机上点「确认登录」。")
+        say("（关掉图片窗口不影响，这里会等）")
+        print("等扫码", end="", flush=True)
+
+        last = None
+        payload = {}
+        while True:
+            try:
+                async with http.get(POLL_API, params={"qrcode_key": qr_key}) as r:
+                    d = await r.json()
+            except Exception as e:
+                say(f"\n查询扫码状态出错：{type(e).__name__}: {e}")
+                return None
+            payload = d.get("data") or {}
+            code = payload.get("code", d.get("code"))
+            if code == 0:
+                break
+            if code == 86038:
+                say("\n二维码过期了，重跑一次 首次运行.cmd。")
+                return None
+            if code == 86090 and last != 86090:
+                say("\n扫到了，等你在手机上确认…")
+                last = 86090
+            print(".", end="", flush=True)
+            await asyncio.sleep(2)
+        say("")
+
+        url = payload.get("url") or ""
+        sessdata = _cookie(url, "SESSDATA", "sessdata")
+        bili_jct = _cookie(url, "bili_jct")
+        uid_s = _cookie(url, "DedeUserID", "dedeuserid")
+        ac_time = payload.get("refresh_token") or ""
+        if not sessdata:
+            say("登录回调里没有 SESSDATA，这次没拿到凭据。")
+            say(f"（回调地址：{url[:240]}）")
+            return None
+
+        cred = Credential(sessdata=sessdata, bili_jct=bili_jct,
+                          dedeuserid=uid_s, ac_time_value=ac_time)
+        uid = int(uid_s or 0)
+        name = ""
+        try:
+            info = await buser.get_self_info(cred)
+            uid = int(info.get("mid") or uid)
+            name = info.get("uname") or ""
+        except Exception:
+            pass
+        say(f"登录成功：{name or uid}（UID {uid}）")
+        return cred, uid, name
 
 
 def save_cred(cred):
@@ -108,6 +171,10 @@ def save_cred(cred):
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, CRED)
     say(f"凭据已保存：{CRED}")
+    if not data["sessdata"]:
+        say("警告：凭据里 sessdata 是空的，哨兵会读不了消息。")
+        return False
+    return True
 
 
 def find_dsh():
@@ -159,7 +226,9 @@ def main():
         say("登录没成功，这次先退出。")
         return 1
     cred, uid, name = result
-    save_cred(cred)
+    if not save_cred(cred):
+        say("凭据是空的，先不写配置。检查网络后再跑一次。")
+        return 1
 
     # 2. key
     say("\n[2/3] DeepSeek API key")
