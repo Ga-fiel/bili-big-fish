@@ -1,0 +1,4 @@
+# 大肥鱼运行依赖（Python 3.10+）
+bilibili-api-python>=17.0.0
+pillow>=9
+qrcode>=7

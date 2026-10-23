@@ -1,0 +1,55 @@
+{
+  "_说明": "主人能改的一切。哨兵每轮重读，改完 30 秒左右生效，不用重启。",
+  "sentinel_enabled": true,
+  "auto_reply": true,
+  "scan_enabled": true,
+  "dm_enabled": true,
+  "night_quiet": false,
+  "night_quiet_range": [
+    "00:00",
+    "07:00"
+  ],
+  "mode": {
+    "at": 2,
+    "reply": 2,
+    "dm": 2
+  },
+  "attitude": {
+    "at": "yes",
+    "reply": "yes",
+    "dm": "filter"
+  },
+  "wake_interval_seconds": 90,
+  "min_count": 1,
+  "max_age_hours": 24,
+  "caps": {
+    "daily_people": 5,
+    "per_video": 5,
+    "per_thread": 3,
+    "daily_dm": 5,
+    "hourly_wakes": 20,
+    "scan_per_day": 15,
+    "hard": false
+  },
+  "scan_at": [
+    "12:30",
+    "21:00"
+  ],
+  "diary_at": "21:30",
+  "scan": {
+    "self_decided": true
+  },
+  "share": {
+    "master_uid": 0,
+    "master_name": "",
+    "at_on_every_comment": true,
+    "tell_when_replying": "经常"
+  },
+  "dm_max_chars": 450,
+  "session_max_tokens": 60000,
+  "dsh_profile": "headless",
+  "dsh_bin": "",
+  "llm_base": "https://api.deepseek.com/v1",
+  "llm_model": "deepseek-chat",
+  "llm_key": ""
+}

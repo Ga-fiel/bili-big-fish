@@ -1,0 +1,17 @@
+# 运行时产生的文件，不进仓库
+memory/
+logs/
+inbox/
+dsh-home/
+credential/
+config.json
+qr-login.png
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# 系统
+.DS_Store
+Thumbs.db
