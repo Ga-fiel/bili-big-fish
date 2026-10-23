@@ -66,6 +66,45 @@ def _cookie(url: str, *names: str) -> str:
     return ""
 
 
+def _parse_set_cookie(headers) -> dict:
+    """把响应头里的 Set-Cookie 拆成 {名字: 值}。"""
+    out = {}
+    for raw in headers or []:
+        first = raw.split(";", 1)[0]
+        if "=" in first:
+            k, v = first.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+async def _exchange_ticket(ticket_url: str) -> dict:
+    """B 站新扫码流程：回调地址里只有 ticket，没有 cookie。
+
+    访问一次 crossDomain 地址，从响应头里读 B 站下发的 cookie。
+    这里直接读响应头，不依赖 cookie jar（跨域 cookie 会被 jar 拒收）。
+    """
+    if aiohttp is None or not ticket_url:
+        return {}
+    out = {}
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.get(
+                ticket_url,
+                allow_redirects=True,
+                headers={"User-Agent": UA, "Referer": "https://www.bilibili.com/"},
+            ) as r:
+                for k, v in _parse_set_cookie(r.headers.getall("Set-Cookie", [])).items():
+                    out[k] = v
+                for k, m in r.cookies.items():
+                    out[k] = m.value
+    except Exception as e:
+        say(f"（用 ticket 换 cookie 失败：{type(e).__name__}: {e}）")
+        return {}
+    if not (out.get("SESSDATA") or out.get("sessdata")):
+        say(f"（票据没换出 SESSDATA，响应里只有：{sorted(out.keys())}）")
+    return out
+
+
 async def login_bili():
     """扫码登录，返回 (credential, uid, name)。
 
@@ -112,10 +151,15 @@ async def login_bili():
 
         last = None
         payload = {}
+        got = {}
         while True:
             try:
                 async with http.get(POLL_API, params={"qrcode_key": qr_key}) as r:
                     d = await r.json()
+                    for k, v in _parse_set_cookie(r.headers.getall("Set-Cookie", [])).items():
+                        got[k] = v
+                    for k, m in r.cookies.items():
+                        got[k] = m.value
             except Exception as e:
                 say(f"\n查询扫码状态出错：{type(e).__name__}: {e}")
                 return None
@@ -134,10 +178,18 @@ async def login_bili():
         say("")
 
         url = payload.get("url") or ""
-        sessdata = _cookie(url, "SESSDATA", "sessdata")
-        bili_jct = _cookie(url, "bili_jct")
-        uid_s = _cookie(url, "DedeUserID", "dedeuserid")
         ac_time = payload.get("refresh_token") or ""
+        sessdata = (_cookie(url, "SESSDATA", "sessdata")
+                    or got.get("SESSDATA", "") or got.get("sessdata", ""))
+        bili_jct = _cookie(url, "bili_jct") or got.get("bili_jct", "")
+        uid_s = (_cookie(url, "DedeUserID", "dedeuserid")
+                 or got.get("DedeUserID", "") or got.get("dedeuserid", ""))
+        if not sessdata and url:
+            say("B 站现在用 ticket 换 cookie，正在换…")
+            extra = await _exchange_ticket(url)
+            sessdata = extra.get("SESSDATA", "") or extra.get("sessdata", "")
+            bili_jct = bili_jct or extra.get("bili_jct", "")
+            uid_s = uid_s or extra.get("DedeUserID", "") or extra.get("dedeuserid", "")
         if not sessdata:
             say("登录回调里没有 SESSDATA，这次没拿到凭据。")
             say(f"（回调地址：{url[:240]}）")
