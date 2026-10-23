@@ -138,12 +138,9 @@ async def login_bili():
             say(f"二维码图片：{QR}")
             open_file(QR)
         except Exception as e:
-            say(f"（图片没生成出来：{e}）")
-        try:
-            import qrcode_terminal
-            say(qrcode_terminal.draw(qr_link))
-        except Exception as e:
-            say(f"（终端二维码没出来：{e}）")
+            say(f"（二维码图片生成失败：{e}）")
+            say("（先双击 安装依赖.cmd 装好依赖再试）")
+            return None
 
         say("用手机 B 站 App 扫码，然后在手机上点「确认登录」。")
         say("（关掉图片窗口不影响，这里会等）")
