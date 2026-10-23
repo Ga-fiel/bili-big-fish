@@ -326,6 +326,32 @@ def _parse(it: dict, kind: str) -> dict | None:
     }
 
 
+async def _root_text(oid: int, root_id: int, cred) -> str:
+    """楼中楼：按 root_id 读出楼层根（楼主）那句。@ 消息只给 target_id，reply 有时只给 root_id。"""
+    if not oid or not root_id:
+        return ""
+    import aiohttp
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com/",
+        "Cookie": f"SESSDATA={cred.sessdata}; buvid3={cred.buvid3}",
+    }
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.get(
+                "https://api.bilibili.com/x/v2/reply/reply",
+                params={"type": 1, "oid": int(oid), "root": int(root_id), "ps": 1, "pn": 1},
+                headers=headers,
+            ) as r:
+                body = await r.json(content_type=None)
+    except Exception:
+        return ""
+    root = (body.get("data") or {}).get("root") or {}
+    return str((root.get("content") or {}).get("message") or "").strip()[:300]
+
+
 def _too_old(m: dict, now: float, cfg: dict) -> bool:
     """超过 max_age_hours 的旧消息就别再叫醒了（默认 24 小时）。"""
     try:
@@ -351,8 +377,16 @@ async def gather(cfg: dict) -> list[dict]:
             r = await session.get_at(credential=cred)
             for it in r.get("items") or []:
                 p = _parse(it, "at")
-                if p and p["from_uid"] != me and not _too_old(p, now, cfg):
-                    out.append(p)
+                if not p or p["from_uid"] == me or _too_old(p, now, cfg):
+                    continue
+                inner = it.get("item") or {}
+                try:
+                    target = int(inner.get("target_id") or 0) or int(inner.get("root_id") or 0)
+                except Exception:
+                    target = 0
+                if target and not p["root_text"]:
+                    p["root_text"] = await _root_text(int(inner.get("subject_id") or 0), target, cred)
+                out.append(p)
         except Exception as e:
             log(f"[warn] 读 @ 失败：{e}")
 
@@ -361,20 +395,35 @@ async def gather(cfg: dict) -> list[dict]:
             r = await session.get_replies(credential=cred)
             for it in r.get("items") or []:
                 p = _parse(it, "reply")
-                if p and p["from_uid"] != me and not _too_old(p, now, cfg):
-                    out.append(p)
+                if not p or p["from_uid"] == me or _too_old(p, now, cfg):
+                    continue
+                inner = it.get("item") or {}
+                try:
+                    root_id = int(inner.get("root_id") or 0)
+                except Exception:
+                    root_id = 0
+                if root_id and not p["root_text"]:
+                    p["root_text"] = await _root_text(int(inner.get("subject_id") or 0), root_id, cred)
+                out.append(p)
         except Exception as e:
             log(f"[warn] 读回复失败：{e}")
 
     if att.get("dm") != "forbid" and int(mode.get("dm", 0)) != 0:
-        try:
-            r = await session.get_sessions(credential=cred, session_type=1)
+        # 两处都会话：1=最近会话；2=未关注人（陌生人第一次私信都在这里，原来只看 1 会漏）
+        dm_seen_uid = set()
+        for st in (1, 2):
+            try:
+                r = await session.get_sessions(credential=cred, session_type=st)
+            except Exception as e:
+                log(f"[warn] 读私信列表(type={st})失败：{e}")
+                continue
             for s in r.get("session_list") or []:
                 if not s.get("unread_count"):
                     continue
                 uid = int(s.get("talker_id") or 0)
-                if not uid or uid == me:
+                if not uid or uid == me or uid in dm_seen_uid:
                     continue
+                dm_seen_uid.add(uid)
                 lm = s.get("last_msg") or {}
                 raw = lm.get("content") or ""
                 try:
@@ -397,8 +446,6 @@ async def gather(cfg: dict) -> list[dict]:
                     "root_text": "", "uri": "", "bvid": "",
                     "ts": ts,
                 })
-        except Exception as e:
-            log(f"[warn] 读私信列表失败：{e}")
 
     return out
 

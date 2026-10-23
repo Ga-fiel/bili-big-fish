@@ -41,7 +41,7 @@
 | `from_uid` | int | 对方 UID。发给 `post_reply` 的 `to_uid`，或 `send_dm` 的 `uid` |
 | `from_name` | string | 对方昵称 |
 | `text` | string | 对方说的原话 |
-| `root_text` | string | 楼层根那句，回复场景才有，可能为空 |
+| `root_text` | string | 楼层根/被回复的那条评论原文。这是**哨兵任务包里**预先查好带上的；`list_mentions` 工具本身不查，只给 id |
 | `uri` | string | 视频链接，`BV…` 从里面看 |
 | `bvid` | string | 可能为空 |
 | `at` | int | 时间戳（秒）。私信项没有这个字段 |
@@ -50,12 +50,8 @@
 **`dm` 项长得不一样**，没有 `rpid`/`oid`/`root`/`at`：
 
 ```json
-{ "kind": "dm", "from_uid": 1000000000, "from_name": "主人",
+{ "kind": "dm", "from_uid": 123456789, "from_name": "主人",
   "text": "（2 条未读）肥鱼肥鱼肥鱼", "ts": 1792674422 }
-```
-
-> 上面是示例占位。实际运行时 `from_uid` / `from_name` 是主人自己的 UID 和昵称，
-> 由 `config.json` 的 `share.master_uid` / `share.master_name` 决定。
 ```
 
 ### `kind = "scan"` 的任务包
@@ -77,7 +73,7 @@
 
 ---
 
-## 十四个工具
+## 二十七个工具
 
 ### `peek_inbox`
 无参数。返回最新任务包 JSON。没有包时返回一句话说明。
@@ -91,8 +87,34 @@
 | `limit` | 20 | 最多几条 |
 | `kinds` | `"at,reply"` | 逗号分隔，可选 `at` `reply` |
 
-返回**每行一个 JSON**（不是数组），字段是 `kind/rpid/oid/root/from/text/root_text/uri/time`。
-它已经按你的态度档过滤过：`forbid` 的类别根本不会出现。已经回过的不会消失，自己看 `time` 判断。
+返回**每行一个 JSON**（不是数组），字段：
+`kind / rpid / oid / root / parent / from_uid / from_name / text / uri / at`。
+
+- `rpid` 是对方**这一条**的 id；`parent` 是它直接回复的那条；`root` 是楼层根。
+- `at` 消息里，`parent`/`root` 都是它所在的楼层根（B 站 AT 只给 `target_id`）。
+- **它不替你查评论内容**。想知道「楼主是谁、说了什么」，拿 `oid` + `root` 去调 `get_comment` 或 `list_thread`。
+- 已经按你的态度档过滤过：`forbid` 的类别根本不会出现。已经回过的不会消失，自己看 `at` 判断。
+
+### `get_comment`
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `oid` | 是 | 视频 aid |
+| `rpid` | 是 | 评论 id（楼层根或楼里任意一条都行） |
+
+返回 JSON：`found`、`target`（这条评论：rpid/oid/root/parent/user/mid/content/ctime）、`floor`（楼层根，也就是楼主那条）、`floor_is_target`。
+`target.oid` 能直接拿去 `post_reply`；`target.parent` 就是它回复的那条。
+
+### `list_thread`
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `oid` | 是 | 视频 aid |
+| `root` | 是 | 楼层根 rpid |
+| `pn` | 否 | 页码，默认 1 |
+| `ps` | 否 | 每页条数，默认 20，上限 50 |
+
+返回 JSON：`root`（楼层根 = 楼主）、`replies`（这楼的回复列表）、`page`。
+每条回复字段：`rpid/oid/root/parent/user/mid/content/ctime`。
+楼中楼想看清顺序，就按 `parent` 串：`parent` 指谁，谁就是它回复的人。
 
 ### `read_video`
 | 参数 | 说明 |
@@ -131,7 +153,7 @@
 | `bvid` | 二选一 | 也可以只给 BV 号，工具自己去查 aid |
 | `at_master` | 否 | 默认 `true` |
 
-**默认会自动在正文前面加主人的 @。** 这是主人的要求：你开口，他要看见。
+**默认会自动在正文前面加 `@主人 `。** 这是主人的要求：你开口，他要看见。
 返回的 `text` 字段是**实际发出去的全文**（含 @），你可以核对。
 
 会被拒绝的情况：主人关了自动回复 / 空内容 / `[草稿]` 开头 / 超过 1000 字 / 没给 oid 或 bvid。
@@ -210,6 +232,114 @@
 
 追加到 `memory/longterm.md`。适合记"主人提过他讨厌标题党"这种长期有效的事。
 
+### `like_video`
+给视频点赞 / 取消点赞。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `bvid` | 二选一 | 例如 `BV16KnN6KEwo` |
+| `oid` | 二选一 | 视频 aid |
+| `undo` | 否 | `true` = 取消点赞，默认 `false` |
+
+返回 `{"liked": true/false, "bvid": …, "res": …}`。
+
+### `coin_video`
+给视频投币。**硬币是真钱，投出去不回来。**
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `bvid` / `oid` | 二选一 | 同 `like_video` |
+| `num` | 否 | 1 或 2 枚，默认 1 |
+| `also_like` | 否 | 投币同时点赞，默认 `false` |
+
+返回 `{"coins": 1, "also_like": false, "res": …}`。硬币不够或已经投过会报错。
+
+### `list_fav_folders`
+无参数。列出自己的收藏夹，每项 `media_id` `title` `count` `privacy`。
+`folder_id` 就是这里的 `media_id`。
+
+### `list_fav_medias`
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `media_id` | 是 | 收藏夹 id（从 `list_fav_folders` 拿） |
+| `page` | 否 | 第几页，默认 1 |
+
+返回每项 `bvid` `title` `up` `fav_time`。
+
+### `create_fav_folder`
+新建一个收藏夹。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `title` | 是 | 收藏夹名字 |
+| `privacy` | 否 | `0` 公开 / `1` 私密，默认 `0` |
+
+返回 `{"media_id": 新收藏夹 id, "title": …}`。
+
+### `delete_fav_folder`
+删掉一个收藏夹，**里面的收藏会一起没**。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `media_id` | 是 | 收藏夹 id |
+
+返回 `{"deleted_media_id": …}`。
+
+### `favorite_video`
+把视频收藏进收藏夹，或从收藏夹移出。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `bvid` / `oid` | 二选一 | 视频 |
+| `folder_id` | 是 | 收藏夹 id |
+| `undo` | 否 | `true` = 从收藏夹移出，默认 `false` |
+
+返回 `{"added": true/false, "folder_id": …}`。
+
+### `view_user`
+看一个人的主页：昵称、签名、等级、粉丝数，加上他最新发的视频。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `uid` | 是 | 对方 uid |
+| `limit` | 否 | 取几个视频，默认 20，最多 30 |
+
+返回 `{"uid", "name", "sign", "level", "fans", "videos": [{bvid, title, play, created}]}`。
+
+### `send_dynamic`
+发一条动态。就这一件事——没有夹带的参数、没有额度和开关。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `text` | 是 | 正文，≤ 2000 字。以 `[草稿]` 开头的会被拒 |
+
+返回 `{"sent": true, "dyn_id": …, "dyn_id_str": "…", "url": "https://t.bilibili.com/…", "raw": {…}}`。
+- `dyn_id` 记好，以后要删这条动态就靠它。
+- `url` 是这条动态的网页地址。
+- 想在动态里 @ 谁，就在正文里自己写 `@昵称`，工具不会替你加。
+
+发不发、什么时候发、写什么，都是你自己的事。
+
+### `delete_dynamic`
+删掉自己的一条动态。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `dyn_id` | 是 | `send_dynamic` 返回的那个 id |
+
+返回 `{"deleted": true, "dyn_id": …, "raw": {…}}`。只能删自己的。
+
+### `delete_comment`
+删掉自己在视频底下发的一条评论（主楼、楼中楼都行）。
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `oid` | 是 | 评论所在视频的 aid |
+| `rpid` | 是 | 要删的那条评论 id |
+
+返回 `{"deleted": true, "oid": …, "rpid": …, "raw": {…}}`。
+只能删自己的，删别人的 B站 会拒绝。
+
 ---
 
 ## 常见活儿怎么串
@@ -219,6 +349,14 @@
 peek_inbox → read_video(oid) → post_reply(text, oid, rpid, root, to_uid)
 ```
 `rpid` / `root` / `to_uid` 全部从任务包的那一项里抄，别自己编。
+
+**想知道「楼主是谁、说了什么」**
+
+```
+list_mentions → 拿到 oid/root → get_comment(oid, rpid)   ← 单条：它的 parent、楼层根和楼主
+                             → list_thread(oid, root)    ← 整楼：楼主 + 这楼所有回复
+```
+`at` 和 `reply` 消息的 `root` 都是楼层根，不用猜。`parent` 是它直接回复的那条。
 
 **回私信**
 ```
@@ -233,21 +371,50 @@ peek_inbox → 自己想几个词 → search_videos(keyword, "pubdate")
            → 三种后续，自己选：
               什么都不做
               comment_video(text, oid)      ← 有自己的话想说（会自动 @ 主人）
-              send_dm(1234567890, text)     ← 换成主人的 UID，值得给主人看
+              send_dm(主人的uid, text)      ← 值得给主人看
 ```
 `daily_new` 是几个就刷几个，每个都 `read_video` 过一遍才算数。
 
-**跟同类聊**
-```
-read_video(bvid) → 看到评论区里像个 AI 号 → post_reply(text, oid, rpid, root, to_uid)
-```
-跟普通回复一模一样，没有额外工具、没有额外额度。
-
 **写日记**
+
 ```
 peek_inbox → read_diary(今天) → 拼好整篇 → write_diary(md)
 ```
 也可以顺手 `remember` 一条特别值得记的。
+
+**看一个人、看他的视频**
+
+```
+view_user(uid) → 里面每条都有 bvid → read_video(bvid)
+```
+
+**收藏一个视频**
+
+```
+list_fav_folders → 没有合适的就 create_fav_folder("大肥鱼喜欢的")
+                 → favorite_video(bvid, folder_id=…)
+```
+
+**点赞 / 投币**
+
+```
+like_video(bvid)                    ← 喜欢就点，点错了 undo=true
+coin_video(bvid, num=1)             ← 硬币是真钱，想清楚再投
+coin_video(bvid, num=1, also_like=true)  ← 投币顺带点赞
+```
+
+**发动态 / 删动态**
+
+```
+send_dynamic("今天刷到一个视频……")     ← 发出去，返回里有 dyn_id
+delete_dynamic(dyn_id)                  ← 想删就用这个
+```
+
+**删自己的评论**
+
+```
+delete_comment(oid, rpid)               ← rpid 就是当初发评论时返回的那个
+```
 
 ---
 
