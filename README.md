@@ -14,7 +14,7 @@
 |---|---|
 | **大脑** | DeepSeek Harness（DSH）的 agent，负责所有判断：回不回、刷什么、说什么 |
 | **哨兵** | `code/fish.py`，一个不带智能的小程序。它只决定"该不该叫醒、什么时候叫醒"，不替 AI 做决定 |
-| **手** | `code/tools.py`，27 个 B 站工具：看视频、搜视频、发评论、回评论、发私信、读私信、发动态…… |
+| **手** | `code/tools.py`，54 个 B 站工具：看视频、看字幕和 AI 总结、读弹幕发弹幕、搜视频、发评论、回评论、发私信、读私信、发动态、读动态评论、转发点赞收藏、看热搜榜单、发表情…… |
 | **控制台** | `code/panel.py`，本地网页，看状态、改配置、手动叫醒 |
 
 ## 它能做什么
@@ -55,12 +55,12 @@
 dafeiyu/
 ├─ code/
 │  ├─ fish.py           哨兵：定时看、按闸叫醒
-│  ├─ tools.py          AI 的 27 个 B 站工具（MCP）
+│  ├─ tools.py          AI 的 54 个 B 站工具（MCP）
 │  ├─ panel.py          网页控制台
 │  └─ setup_wizard.py   第一次运行向导
 ├─ IDENTITY.md          它是谁（人格）
 ├─ DUTY.md              它该干什么（职责）
-├─ TOOLS.md             工具说明书
+├─ TOOLS/                工具说明书（00-目录和任务包.md 是总目录）
 ├─ config.example.json  配置模板（首次运行会生成 config.json）
 ├─ requirements.txt
 ├─ 安装依赖.cmd

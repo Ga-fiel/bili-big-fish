@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""大肥鱼的工具箱 —— 27 个工具，AI 的手
+"""大肥鱼的工具箱 —— 54 个工具，AI 的手
 
 AI 只有通过这里的工具才能碰到 B站。
 硬闸全部在这里：严禁、限额、草稿拒发、字数上限。
@@ -258,7 +258,7 @@ async def _fetch_replies(cred):
     return [_parse_notice(it, "reply") for it in (r.get("items") or [])]
 
 
-async def _thread_json(oid: int, rpid: int, ps: int = 20, pn: int = 1) -> dict:
+async def _thread_json(oid: int, rpid: int, ps: int = 20, pn: int = 1, type_: int = 1) -> dict:
     """拉一楼的原始数据：楼层根评论 + 这楼的回复（root 传楼层根或楼内任意一条都行，B 站会解析）。"""
     if not oid or not rpid:
         return {}
@@ -268,7 +268,7 @@ async def _thread_json(oid: int, rpid: int, ps: int = 20, pn: int = 1) -> dict:
         async with aiohttp.ClientSession() as http:
             async with http.get(
                 "https://api.bilibili.com/x/v2/reply/reply",
-                params={"type": 1, "oid": int(oid), "root": int(rpid), "ps": int(ps), "pn": int(pn)},
+                params={"type": int(type_), "oid": int(oid), "root": int(rpid), "ps": int(ps), "pn": int(pn)},
                 headers=_cookie_headers(_cred()),
             ) as r:
                 body = await r.json(content_type=None)
@@ -369,6 +369,7 @@ async def tool_list_mentions(limit: int = 20, kinds: str = "at,reply") -> str:
                     "from_name": m["from_name"],
                     "text": m["text"],
                     "uri": m["uri"],
+                    "business_id": m["business_id"],
                     "at": m["at"],
                 },
                 ensure_ascii=False,
@@ -378,6 +379,7 @@ async def tool_list_mentions(limit: int = 20, kinds: str = "at,reply") -> str:
 
 
 async def tool_read_video(bvid: str = "", oid: int = 0) -> str:
+    """读一个视频的基本信息：标题、UP、简介、热门评论。要字幕用 read_subtitle / read_subtitle_all。"""
     cred = _cred()
     from bilibili_api import video as bvideo, comment as bcomment
 
@@ -389,32 +391,6 @@ async def tool_read_video(bvid: str = "", oid: int = 0) -> str:
     else:
         raise RuntimeError("要么给 bvid，要么给 oid")
     info = await v.get_info()
-    sub_text = ""
-    try:
-        cid = (info.get("pages") or [{}])[0].get("cid")
-        if cid:
-            sub = await v.get_subtitle(cid=cid)
-            subs = (sub or {}).get("subtitles") or []
-            if subs:
-                import urllib.request
-
-                url = subs[0].get("subtitle_url") or ""
-                if url.startswith("//"):
-                    url = "https:" + url
-                req = urllib.request.Request(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Referer": f"https://www.bilibili.com/video/{info.get('bvid')}",
-                    },
-                )
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    body = json.loads(resp.read().decode("utf-8"))
-                sub_text = " ".join(
-                    (x.get("content") or "") for x in (body.get("body") or [])
-                )[:1500]
-    except Exception as e:
-        sub_text = f"（字幕没取到：{type(e).__name__}）"
 
     hot = []
     try:
@@ -440,8 +416,6 @@ async def tool_read_video(bvid: str = "", oid: int = 0) -> str:
         f"播放：{(info.get('stat') or {}).get('view')}",
         f"简介：{_clean((info.get('desc') or ''))[:300]}",
     ]
-    if sub_text:
-        parts.append(f"字幕摘录：{sub_text}")
     if hot:
         parts.append("热门评论：" + " / ".join(hot))
     _mark_seen_video(info.get("bvid") or "")
@@ -910,21 +884,38 @@ def tool_get_policy() -> str:
 # ---------------------------------------------------------------- 动态
 
 
-async def tool_send_dynamic(text: str = "") -> str:
-    """发一条动态。正文自己写，想什么时候发就什么时候发。"""
+async def tool_send_dynamic(text: str = "", topic_id: int = 0, at_uids: list = None) -> str:
+    """发一条动态。正文自己写；要带话题给 topic_id，要 @ 人给 at_uids（uid 列表）。"""
     body = _check_text(text, 2000, "动态")
-    from bilibili_api import dynamic as bdynamic
+    from bilibili_api import dynamic as bdynamic, user as buser
 
     cred = _cred()
-    res = await bdynamic.send_dynamic(bdynamic.BuildDynamic.create_by_args(text=body), cred)
+    if isinstance(at_uids, str):
+        at_uids = [x.strip() for x in at_uids.replace("，", ",").split(",") if x.strip()]
+    ats = []
+    for u in (at_uids or []):
+        try:
+            info = await buser.User(uid=int(u), credential=cred).get_user_info()
+            if info.get("name"):
+                ats.append("@" + str(info.get("name")))
+        except Exception:
+            pass
+    if ats:
+        body = " ".join(ats) + " " + body
+    kw = {"text": body}
+    if int(topic_id):
+        kw["topic_id"] = int(topic_id)
+    res = await bdynamic.send_dynamic(bdynamic.BuildDynamic.create_by_args(**kw), cred)
     res = res or {}
     dyn_id_str = str(res.get("dyn_id_str") or res.get("dyn_id") or "")
     return json.dumps(
         {
             "sent": True,
-            "dyn_id": int(res.get("dyn_id") or 0) or None,
+            "dyn_id": dyn_id_str or None,
             "dyn_id_str": dyn_id_str,
             "url": res.get("share_url") or (f"https://t.bilibili.com/{dyn_id_str}" if dyn_id_str else ""),
+            "at": ats,
+            "topic_id": int(topic_id or 0) or None,
             "raw": res,
         },
         ensure_ascii=False,
@@ -932,14 +923,14 @@ async def tool_send_dynamic(text: str = "") -> str:
 
 
 async def tool_delete_dynamic(dyn_id: int = 0) -> str:
-    """删掉自己的一条动态。dyn_id 就是发动态时返回的那个。"""
+    """删掉自己的一条动态。dyn_id 就是发动态时返回的那个；19 位数字，传的时候用字符串，别转成数字。"""
     if not int(dyn_id):
         raise RuntimeError("要给我 dyn_id。")
     from bilibili_api import dynamic as bdynamic
 
     cred = _cred()
     res = await bdynamic.Dynamic(dynamic_id=int(dyn_id), credential=cred).delete()
-    return json.dumps({"deleted": True, "dyn_id": int(dyn_id), "raw": res}, ensure_ascii=False)
+    return json.dumps({"deleted": True, "dyn_id": str(dyn_id), "raw": res}, ensure_ascii=False)
 
 
 async def tool_delete_comment(oid: int = 0, rpid: int = 0) -> str:
@@ -953,6 +944,763 @@ async def tool_delete_comment(oid: int = 0, rpid: int = 0) -> str:
         oid=int(oid), type_=bcomment.CommentResourceType.VIDEO, rpid=int(rpid), credential=cred
     ).delete()
     return json.dumps({"deleted": True, "oid": int(oid), "rpid": int(rpid), "raw": res}, ensure_ascii=False)
+
+
+async def tool_comment_dynamic(text: str = "", dyn_id: int = 0, rpid: int = 0, root: int = 0) -> str:
+    """回复动态里的评论。dyn_id 是动态 id（19 位，传字符串），rpid 是要回复的那条评论 id。"""
+    cfg = load_cfg()
+    if not cfg.get("auto_reply", True):
+        raise RuntimeError("号主关掉了「自动回复」，现在只能看不能发。")
+    if not int(dyn_id):
+        raise RuntimeError("要给我 dyn_id，就是动态链接 /opus/ 后面那串数字。")
+    text = _check_text(text)
+
+    cred = _cred()
+    from bilibili_api import comment as bcomment
+    from bilibili_api import dynamic as bdynamic
+
+    try:
+        detail = await bdynamic.Dynamic(dynamic_id=int(dyn_id), credential=cred).get_info()
+    except Exception as e:
+        raise RuntimeError(f"这条动态现在看不到，可能已经删了或还没审核完：{e}")
+    basic = ((detail or {}).get("item") or {}).get("basic") or {}
+    ctype = int(basic.get("comment_type") or 0)
+    oid = int(basic.get("comment_id_str") or 0) or int(dyn_id)
+    if ctype == 11:
+        type_ = bcomment.CommentResourceType.DYNAMIC_DRAW
+    elif ctype == 17:
+        type_ = bcomment.CommentResourceType.DYNAMIC
+    else:
+        raise RuntimeError(f"这条动态的评论类型是 {ctype}，暂时评论不了。")
+
+    parent = int(rpid or 0)
+    rt = int(root or 0) or parent
+    res = await bcomment.send_comment(
+        text=text,
+        oid=oid,
+        type_=type_,
+        root=rt if rt else None,
+        parent=parent if parent else None,
+        credential=cred,
+    )
+    new_rpid = ((res or {}).get("rpid") or (res or {}).get("data", {}).get("rpid") or 0)
+    return json.dumps(
+        {
+            "sent": True,
+            "rpid": new_rpid,
+            "dyn_id": str(dyn_id),
+            "oid": oid,
+            "comment_type": ctype,
+            "toast": (res or {}).get("success_toast") or "已发送",
+        },
+        ensure_ascii=False,
+    )
+
+
+async def tool_read_dynamic_comment(dyn_id: int = 0, rpid: int = 0, root: int = 0, pn: int = 1, ps: int = 20) -> str:
+    """读动态的评论。dyn_id 是动态 id（19 位，传字符串）；给 rpid 读一条，给 root 读整楼，都不给就读评论区第一页。"""
+    if not int(dyn_id):
+        raise RuntimeError("要给我 dyn_id，就是动态链接 /opus/ 后面那串数字。")
+    cred = _cred()
+    from bilibili_api import dynamic as bdynamic
+
+    try:
+        detail = await bdynamic.Dynamic(dynamic_id=int(dyn_id), credential=cred).get_info()
+    except Exception as e:
+        raise RuntimeError(f"这条动态现在看不到，可能已经删了或还没审核完：{e}")
+    basic = ((detail or {}).get("item") or {}).get("basic") or {}
+    ctype = int(basic.get("comment_type") or 0)
+    oid = int(basic.get("comment_id_str") or 0) or int(dyn_id)
+    if ctype not in (11, 17):
+        raise RuntimeError(f"这条动态的评论类型是 {ctype}，读不了。")
+
+    rp = int(rpid or 0)
+    rt = int(root or 0) or rp
+    if rt:
+        data = await _thread_json(
+            oid, rt, ps=max(1, min(50, int(ps or 20))), pn=max(1, int(pn or 1)), type_=ctype
+        )
+        root_c = data.get("root") or {}
+        replies = data.get("replies") or []
+        target = None
+        if rp:
+            if int(root_c.get("rpid") or 0) == rp:
+                target = root_c
+            else:
+                for c in replies:
+                    if int(c.get("rpid") or 0) == rp:
+                        target = c
+                        break
+        out = {
+            "dyn_id": str(dyn_id),
+            "oid": oid,
+            "comment_type": ctype,
+            "root": _reply_row(root_c, oid) if root_c else None,
+            "replies": [_reply_row(c, oid) for c in replies],
+            "page": data.get("page") or {},
+        }
+        if rp:
+            out["found"] = bool(target)
+            out["target"] = _reply_row(target, oid) if target else None
+            out["floor_is_target"] = bool(target and root_c and int(root_c.get("rpid") or 0) == rp)
+            if not target:
+                out["hint"] = "这条查不到（可能已删/被折叠）。"
+        return json.dumps(out, ensure_ascii=False)
+
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.get(
+                "https://api.bilibili.com/x/v2/reply",
+                params={
+                    "type": ctype,
+                    "oid": oid,
+                    "ps": max(1, min(50, int(ps or 20))),
+                    "pn": max(1, int(pn or 1)),
+                    "sort": 2,
+                },
+                headers=_cookie_headers(cred),
+            ) as r:
+                body = await r.json(content_type=None)
+    except Exception as e:
+        raise RuntimeError(f"评论拉不到：{e}")
+    if body.get("code") != 0:
+        raise RuntimeError(f"评论拉不到：{body.get('code')} {body.get('message')}")
+    data = body.get("data") or {}
+    return json.dumps(
+        {
+            "dyn_id": str(dyn_id),
+            "oid": oid,
+            "comment_type": ctype,
+            "page": data.get("page") or {},
+            "replies": [_reply_row(c, oid) for c in (data.get("replies") or [])],
+        },
+        ensure_ascii=False,
+    )
+
+
+STICKER_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+def _sticker_dir() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "表情库")
+
+
+def _sticker_files() -> list:
+    d = _sticker_dir()
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d) if os.path.splitext(f)[1].lower() in STICKER_EXT)
+
+
+def _sticker_path(name: str) -> str:
+    """按名字找表情：带不带后缀都行，先同名再包含。"""
+    d = _sticker_dir()
+    raw = str(name or "").strip()
+    files = _sticker_files()
+    if not raw:
+        raise RuntimeError("要给表情名字，比如「偷笑」。")
+    if raw in files:
+        return os.path.join(d, raw)
+    for f in files:
+        if os.path.splitext(f)[0] == raw:
+            return os.path.join(d, f)
+    hits = [f for f in files if raw in f]
+    if len(hits) == 1:
+        return os.path.join(d, hits[0])
+    if hits:
+        raise RuntimeError(f"有不止一个像「{raw}」的：{'、'.join(hits)}，说全一点。")
+    names = "、".join(os.path.splitext(f)[0] for f in files) or "（空）"
+    raise RuntimeError(f"表情库里没有「{raw}」。现在有：{names}")
+
+
+def tool_list_stickers(keyword: str = "") -> str:
+    """列出本地表情库里的表情。文件名就是它的意思。"""
+    names = [os.path.splitext(f)[0] for f in _sticker_files()]
+    kw = str(keyword or "").strip()
+    if kw:
+        names = [n for n in names if kw in n]
+    if not names:
+        return "没有匹配的表情。"
+    return "\n".join(names)
+
+
+async def tool_send_sticker(
+    name: str = "",
+    target: str = "comment",
+    oid: int = 0,
+    rpid: int = 0,
+    root: int = 0,
+    dyn_id: int = 0,
+    uid: int = 0,
+    text: str = "",
+) -> str:
+    """发一张本地表情库里的表情。target 是 comment / dm / dynamic。"""
+    from bilibili_api.utils.picture import Picture
+
+    cfg = load_cfg()
+    if not cfg.get("auto_reply", True):
+        raise RuntimeError("号主关掉了「自动回复」，现在只能看不能发。")
+    path = _sticker_path(name)
+    pic = Picture.from_file(path)
+    cred = _cred()
+    who = os.path.basename(path)
+    tg = str(target or "comment").strip().lower()
+
+    if tg == "comment":
+        if not int(oid) and not int(dyn_id):
+            raise RuntimeError("评论要 oid（视频）或 dyn_id（动态）。")
+        from bilibili_api import comment as bcomment
+        from bilibili_api import dynamic as bdynamic
+
+        if int(dyn_id):
+            detail = await bdynamic.Dynamic(dynamic_id=int(dyn_id), credential=cred).get_info()
+            basic = ((detail or {}).get("item") or {}).get("basic") or {}
+            ctype = int(basic.get("comment_type") or 0)
+            target_oid = int(basic.get("comment_id_str") or 0) or int(dyn_id)
+            if ctype == 11:
+                tp = bcomment.CommentResourceType.DYNAMIC_DRAW
+            elif ctype == 17:
+                tp = bcomment.CommentResourceType.DYNAMIC
+            else:
+                raise RuntimeError(f"这条动态的评论类型是 {ctype}，发不了。")
+        else:
+            target_oid = int(oid)
+            tp = bcomment.CommentResourceType.VIDEO
+        parent = int(rpid or 0)
+        rt = int(root or 0) or parent
+        body = _check_text(text)
+        warn = _cap_check("video", str(target_oid)) if not int(dyn_id) else ""
+        res = await bcomment.send_comment(
+            text=body,
+            oid=target_oid,
+            type_=tp,
+            root=rt if rt else None,
+            parent=parent if parent else None,
+            pic=pic,
+            credential=cred,
+        )
+        new_rpid = ((res or {}).get("rpid") or (res or {}).get("data", {}).get("rpid") or 0)
+        if warn:
+            _cap_bump("video", 0, str(target_oid))
+        out = {
+            "sent": True,
+            "rpid": new_rpid,
+            "oid": target_oid,
+            "sticker": who,
+            "toast": (res or {}).get("success_toast") or "已发送",
+        }
+        return json.dumps(out, ensure_ascii=False) + (("\n" + warn) if warn else "")
+
+    if tg == "dm":
+        _forbid_dm()
+        if not int(uid):
+            raise RuntimeError("私信要 uid。")
+        from bilibili_api import session
+
+        await session.send_msg(cred, int(uid), session.EventType.PICTURE, pic)
+        return json.dumps({"sent": True, "uid": int(uid), "sticker": who, "toast": "已发送"}, ensure_ascii=False)
+
+    if tg == "dynamic":
+        from bilibili_api import dynamic as bdynamic
+
+        body = _check_text(text) if str(text or "").strip() else ""
+        res = await bdynamic.send_dynamic(bdynamic.BuildDynamic.create_by_args(text=body, pics=[pic]), cred)
+        d = res or {}
+        dyn_s = str(d.get("dyn_id_str") or d.get("dyn_id") or "")
+        return json.dumps(
+            {
+                "sent": True,
+                "dyn_id": dyn_s or None,
+                "url": d.get("share_url") or (f"https://t.bilibili.com/{dyn_s}" if dyn_s else ""),
+                "sticker": who,
+            },
+            ensure_ascii=False,
+        )
+
+    raise RuntimeError("target 只能是 comment、dm、dynamic。")
+
+
+# ---------------------------------------------------------------- 视频扩展（字幕 / 弹幕 / 相关推荐）
+
+
+def _video_obj(bvid: str = "", oid: int = 0, cred=None):
+    from bilibili_api import video as bvideo
+
+    if bvid:
+        return bvideo.Video(bvid=bvid, credential=cred or _cred())
+    if oid:
+        return bvideo.Video(aid=int(oid), credential=cred or _cred())
+    raise RuntimeError("要么给 bvid，要么给 oid。")
+
+
+async def _video_cid(v) -> int:
+    info = await v.get_info()
+    return int(((info.get("pages") or [{}])[0] or {}).get("cid") or 0)
+
+
+async def _subtitle_text(v) -> str:
+    cid = await _video_cid(v)
+    if not cid:
+        return ""
+    try:
+        sub = await v.get_subtitle(cid=cid)
+    except Exception:
+        return ""
+    subs = (sub or {}).get("subtitles") or []
+    if not subs:
+        return ""
+    import urllib.request
+
+    url = subs[0].get("subtitle_url") or ""
+    if url.startswith("//"):
+        url = "https:" + url
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return " ".join((x.get("content") or "") for x in (body.get("body") or [])).strip()
+
+
+async def tool_read_subtitle(bvid: str = "", oid: int = 0, chars: int = 500) -> str:
+    """读视频字幕的前 chars 个字（默认 500）。要全文用 read_subtitle_all。"""
+    v = _video_obj(bvid, oid)
+    text = await _subtitle_text(v)
+    if not text:
+        raise RuntimeError("这个视频没有字幕。")
+    n = max(1, int(chars or 500))
+    if len(text) <= n:
+        return text
+    return text[:n] + f"…（共 {len(text)} 字，要更多就加大 chars，或者用 read_subtitle_all）"
+
+
+async def tool_read_subtitle_all(bvid: str = "", oid: int = 0) -> str:
+    """读视频的全部字幕（太长时截到 10000 字）。"""
+    v = _video_obj(bvid, oid)
+    text = await _subtitle_text(v)
+    if not text:
+        raise RuntimeError("这个视频没有字幕。")
+    return text[:10000]
+
+
+async def tool_read_video_ai(bvid: str = "", oid: int = 0) -> str:
+    """读视频的 AI 总结。"""
+    v = _video_obj(bvid, oid)
+    cid = await _video_cid(v)
+    res = None
+    for _ in range(2):
+        try:
+            res = await v.get_ai_conclusion(cid=cid)
+            break
+        except Exception:
+            res = None
+    model = (res or {}).get("model_result") or {}
+    summary = (model.get("summary") or "").strip()
+    outline = model.get("outline") or []
+    if not summary and not outline:
+        raise RuntimeError("这个视频没有 AI 总结。")
+    parts = []
+    if summary:
+        parts.append(summary)
+    for o in outline[:20]:
+        t = (o or {}).get("title") or ""
+        if t:
+            parts.append(f"· {t}")
+    return "\n".join(parts)
+
+
+async def tool_list_danmakus(bvid: str = "", oid: int = 0, limit: int = 50) -> str:
+    """读视频的弹幕：时间 + 内容。limit 是最多几条。"""
+    v = _video_obj(bvid, oid)
+    cid = await _video_cid(v)
+    dms = await v.get_danmakus(cid=cid)
+    n = max(1, int(limit or 50))
+    clean = [d for d in (dms or []) if (getattr(d, "text", "") or "").strip()]
+    lines = []
+    for d in clean[:n]:
+        t = float(getattr(d, "dm_time", 0) or 0)
+        mm, ss = int(t // 60), int(t % 60)
+        lines.append(f"[{mm:02d}:{ss:02d}] {getattr(d, 'text', '')}")
+    if not lines:
+        raise RuntimeError("这个视频还没有弹幕。")
+    return "\n".join(lines) + f"\n（共 {len(clean)} 条，这里显示 {len(lines)} 条）"
+
+
+async def tool_send_danmaku(bvid: str = "", oid: int = 0, text: str = "", progress: int = 0, mode: int = 1) -> str:
+    """发一条弹幕。progress 是视频里的位置（毫秒），mode 1=滚动 4=底部 5=顶部。"""
+    cfg = load_cfg()
+    if not cfg.get("auto_reply", True):
+        raise RuntimeError("号主关掉了「自动回复」，现在只能看不能发。")
+    text = _check_text(text, 100, "弹幕")
+    v = _video_obj(bvid, oid)
+    cid = await _video_cid(v)
+    from bilibili_api.utils.danmaku import Danmaku
+
+    dm = Danmaku(text=text, dm_time=max(0.0, float(progress or 0) / 1000.0), mode=int(mode or 1))
+    res = await v.send_danmaku(page_index=0, danmaku=dm, cid=cid)
+    return json.dumps(
+        {"sent": True, "text": text, "progress_ms": int(progress or 0), "mode": int(mode or 1), "raw": res},
+        ensure_ascii=False,
+    )
+
+
+async def tool_list_related(bvid: str = "", oid: int = 0, limit: int = 10) -> str:
+    """列一个视频的相关推荐。"""
+    v = _video_obj(bvid, oid)
+    rel = await v.get_related()
+    n = max(1, int(limit or 10))
+    lines = []
+    for x in (rel or [])[:n]:
+        lines.append(
+            f"{x.get('bvid')} | {x.get('title')} | UP {((x.get('owner') or {}).get('name'))} | 播放 {(x.get('stat') or {}).get('view')}"
+        )
+    if not lines:
+        raise RuntimeError("没有相关推荐。")
+    return "\n".join(lines)
+
+
+async def tool_add_to_toview(bvid: str = "", oid: int = 0, undo: bool = False) -> str:
+    """把视频加进稍后再看；undo=True 就移出来。"""
+    v = _video_obj(bvid, oid)
+    res = await (v.delete_from_toview() if undo else v.add_to_toview())
+    return json.dumps({"ok": True, "toview": not undo, "raw": res}, ensure_ascii=False)
+
+
+async def tool_list_toview(limit: int = 20) -> str:
+    """列稍后再看。"""
+    cred = _cred()
+    from bilibili_api import user as buser
+
+    res = await buser.get_toview_list(cred)
+    items = (res or {}).get("list") or []
+    if not items:
+        return "稍后再看是空的。"
+    lines = [
+        f"{x.get('bvid')} | {x.get('title')} | aid {x.get('aid')}"
+        for x in items[: max(1, int(limit or 20))]
+    ]
+    return "\n".join(lines) + f"\n（共 {(res or {}).get('count')} 个）"
+
+
+# ---------------------------------------------------------------- 动态扩展
+
+
+def _dyn_time(ts) -> str:
+    try:
+        return time.strftime("%m-%d %H:%M", time.localtime(int(ts)))
+    except Exception:
+        return ""
+
+
+def _dyn_row(it) -> str:
+    it = it or {}
+    mods = it.get("modules") or {}
+    ma = mods.get("module_author") or {}
+    md = mods.get("module_dynamic") or {}
+    major = md.get("major") or {}
+    txt = ((major.get("opus") or {}).get("summary") or {}).get("text") or (md.get("desc") or {}).get("text") or ""
+    st = mods.get("module_stat") or {}
+    likes = ((st.get("like") or {}).get("count")) or 0
+    return f"{it.get('id_str')} | {ma.get('name')} | {_dyn_time(ma.get('pub_ts'))} | 赞 {likes} | {_clean(txt)[:100]}"
+
+
+async def tool_list_user_dynamics(uid: int = 0, limit: int = 10) -> str:
+    """看某个人最近发的动态。"""
+    if not int(uid):
+        raise RuntimeError("要给我 uid。")
+    cred = _cred()
+    from bilibili_api import user as buser
+
+    res = await buser.User(uid=int(uid), credential=cred).get_dynamics_new()
+    items = (res or {}).get("items") or []
+    if not items:
+        return "这个人最近没发动态。"
+    return "\n".join(_dyn_row(x) for x in items[: max(1, int(limit or 10))])
+
+
+async def tool_list_following_dynamics(limit: int = 10) -> str:
+    """看关注的人最新的动态。"""
+    cred = _cred()
+    from bilibili_api import dynamic as bdynamic
+
+    res = await bdynamic.get_dynamic_page_info(cred, _type=None)
+    items = (res or {}).get("items") or []
+    if not items:
+        return "关注的人最近没发动态。"
+    return "\n".join(_dyn_row(x) for x in items[: max(1, int(limit or 10))])
+
+
+async def tool_repost_dynamic(dyn_id: int = 0, text: str = "") -> str:
+    """转发一条动态。dyn_id 是 19 位数字，传的时候用字符串。"""
+    if not int(dyn_id):
+        raise RuntimeError("要给我 dyn_id。")
+    cred = _cred()
+    from bilibili_api import dynamic as bdynamic
+
+    res = await bdynamic.Dynamic(dynamic_id=int(dyn_id), credential=cred).repost(text=(text or "转发动态")[:1000])
+    rid = str(((res or {}).get("dyn_id_str") or (res or {}).get("dyn_id") or "") or "")
+    return json.dumps({"reposted": True, "dyn_id": str(dyn_id), "new_dyn_id": rid or None, "raw": res}, ensure_ascii=False)
+
+
+async def tool_like_dynamic(dyn_id: int = 0, undo: bool = False) -> str:
+    """给一条动态点赞；undo=True 取消点赞。dyn_id 是 19 位数字，传的时候用字符串。"""
+    if not int(dyn_id):
+        raise RuntimeError("要给我 dyn_id。")
+    cred = _cred()
+    from bilibili_api import dynamic as bdynamic
+
+    res = await bdynamic.Dynamic(dynamic_id=int(dyn_id), credential=cred).set_like(not undo)
+    return json.dumps({"ok": True, "dyn_id": str(dyn_id), "liked": not undo, "raw": res}, ensure_ascii=False)
+
+
+async def tool_favorite_dynamic(dyn_id: int = 0, undo: bool = False) -> str:
+    """收藏一条动态；undo=True 取消收藏。dyn_id 是 19 位数字，传的时候用字符串。"""
+    if not int(dyn_id):
+        raise RuntimeError("要给我 dyn_id。")
+    cred = _cred()
+    from bilibili_api import dynamic as bdynamic
+
+    res = await bdynamic.Dynamic(dynamic_id=int(dyn_id), credential=cred).set_favorite(not undo)
+    return json.dumps({"ok": True, "dyn_id": str(dyn_id), "favorited": not undo, "raw": res}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------- 账号 / 搜索 / 榜单
+
+
+async def tool_name_to_uid(name: str = "") -> str:
+    """把 B站 用户名转成 uid。"""
+    name = (name or "").strip()
+    if not name:
+        raise RuntimeError("要给我名字。")
+    cred = _cred()
+    from bilibili_api import user as buser
+
+    res = await buser.name2uid(name, credential=cred)
+    lst = (res or {}).get("uid_list") or []
+    if not lst:
+        raise RuntimeError(f"没找到叫「{name}」的人。")
+    return "\n".join(f"{x.get('uid')} | {x.get('name')}" for x in lst)
+
+
+async def tool_self_info() -> str:
+    """看自己账号的数据：昵称、等级、硬币、粉丝、关注。"""
+    cred = _cred()
+    from bilibili_api import user as buser
+
+    uid = _self_uid()
+    info = await buser.get_self_info(cred)
+    coins = await buser.get_self_coins(cred)
+    rel = await buser.User(uid=uid, credential=cred).get_relation_info()
+    return json.dumps(
+        {
+            "uid": uid,
+            "name": info.get("name"),
+            "level": info.get("level"),
+            "coins": coins,
+            "fans": (rel or {}).get("follower"),
+            "following": (rel or {}).get("following"),
+            "sign": info.get("sign") or "",
+        },
+        ensure_ascii=False,
+    )
+
+
+async def tool_up_stat(uid: int = 0) -> str:
+    """看一个 UP 主的数据：播放、点赞、粉丝。"""
+    if not int(uid):
+        raise RuntimeError("要给我 uid。")
+    cred = _cred()
+    from bilibili_api import user as buser
+
+    u = buser.User(uid=int(uid), credential=cred)
+    up = await u.get_up_stat()
+    ov = await u.get_overview_stat()
+    rel = await u.get_relation_info()
+    return json.dumps(
+        {
+            "uid": int(uid),
+            "fans": (rel or {}).get("follower"),
+            "play": ((up or {}).get("archive") or {}).get("view"),
+            "likes": (up or {}).get("likes"),
+            "videos": (ov or {}).get("video"),
+            "articles": (ov or {}).get("article"),
+        },
+        ensure_ascii=False,
+    )
+
+
+async def tool_search_other(keyword: str = "", type: str = "user") -> str:
+    """搜视频以外的东西：type 用 user / article / bangumi / live / topic。"""
+    keyword = (keyword or "").strip()
+    if not keyword:
+        raise RuntimeError("要给我关键词。")
+    from bilibili_api import search as bsearch
+
+    tmap = {
+        "user": bsearch.SearchObjectType.USER,
+        "article": bsearch.SearchObjectType.ARTICLE,
+        "bangumi": bsearch.SearchObjectType.BANGUMI,
+        "live": bsearch.SearchObjectType.LIVE,
+        "topic": bsearch.SearchObjectType.TOPIC,
+    }
+    t = str(type or "user").lower()
+    if t not in tmap:
+        raise RuntimeError("type 只能是 user、article、bangumi、live、topic。")
+    try:
+        res = await bsearch.search_by_type(keyword, tmap[t])
+    except Exception as e:
+        raise RuntimeError(f"这次搜不了：{e}")
+    raw = (res or {}).get("result")
+    items = list(raw) if isinstance(raw, list) else []
+    if isinstance(raw, dict):
+        for v in raw.values():
+            if isinstance(v, list):
+                items.extend(v)
+    if not items:
+        return "没搜到。"
+    lines = []
+    for x in items[:20]:
+        if t == "user":
+            lines.append(f"用户 {x.get('mid')} | {x.get('uname')} | 粉丝 {x.get('fans')}")
+        elif t == "article":
+            lines.append(f"专栏 {x.get('id')} | {_clean(str(x.get('title') or ''))} | UP {x.get('author')}")
+        elif t == "bangumi":
+            lines.append(f"番剧 {x.get('season_id') or x.get('media_id')} | {_clean(str(x.get('title') or ''))}")
+        elif t == "live":
+            lines.append(f"直播 {x.get('roomid')} | {_clean(str(x.get('title') or ''))} | {x.get('uname')}")
+        else:
+            lines.append(f"{x.get('id')} | {_clean(str(x.get('title') or x.get('name') or ''))}")
+    return "\n".join(lines)
+
+
+async def tool_hot_search() -> str:
+    """B站 热搜词。"""
+    from bilibili_api import search as bsearch
+
+    res = await bsearch.get_hot_search_keywords()
+    items = (res or {}).get("list") or []
+    if not items:
+        return "现在没有热搜。"
+    return "\n".join(f"{x.get('keyword')}（{x.get('show_name')}）" for x in items[:20])
+
+
+async def tool_homepage_videos(limit: int = 10) -> str:
+    """首页推荐视频。"""
+    cred = _cred()
+    from bilibili_api import homepage as bhome
+
+    res = await bhome.get_videos(cred)
+    items = [x for x in ((res or {}).get("item") or []) if x.get("goto") == "av"]
+    if not items:
+        return "首页没有推荐。"
+    lines = [
+        f"{x.get('bvid')} | {x.get('title')} | UP {((x.get('owner') or {}).get('name'))}"
+        for x in items[: max(1, int(limit or 10))]
+    ]
+    return "\n".join(lines)
+
+
+async def tool_hot_videos(kind: str = "hot", limit: int = 10) -> str:
+    """热门视频。kind=hot 是热门，weekly 是每周必看。"""
+    from bilibili_api import hot as bhot
+
+    n = max(1, int(limit or 10))
+    k = str(kind or "hot").lower()
+    if k == "weekly":
+        from bilibili_api.utils.network import Api
+
+        series = {
+            "url": "https://api.bilibili.com/x/web-interface/popular/series/list",
+            "method": "GET",
+            "verify": False,
+            "wbi": True,
+        }
+        one = {
+            "url": "https://api.bilibili.com/x/web-interface/popular/series/one",
+            "method": "GET",
+            "verify": False,
+            "wbi": True,
+        }
+        cred = _cred()
+        lst = (
+            await Api(**series, credential=cred)
+            .update_params(web_location="333.934")
+            .result
+        )
+        arr = (lst or {}).get("list") or []
+        if not arr:
+            raise RuntimeError("拿不到每周必看。")
+        week = int(arr[0].get("number") or 1)
+        res = (
+            await Api(**one, credential=cred)
+            .update_params(number=week, web_location="333.934")
+            .result
+        )
+        items = (res or {}).get("list") or []
+    elif k == "hot":
+        res = await bhot.get_hot_videos(pn=1, ps=n)
+        items = (res or {}).get("list") or []
+    else:
+        raise RuntimeError("kind 只能是 hot 或 weekly。")
+    if not items:
+        return "没有。"
+    return "\n".join(
+        f"{x.get('bvid') or x.get('aid')} | {x.get('title')} | UP {((x.get('owner') or {}).get('name'))}"
+        for x in items[:n]
+    )
+
+
+async def tool_zone_videos(tid: int = 0, kind: str = "top10") -> str:
+    """分区排行。tid 是分区 id；kind 目前只能 top10（分区最新接口 B站 已关）。"""
+    if not int(tid):
+        raise RuntimeError("要给我 tid（分区 id）。")
+    k = str(kind or "top10").lower()
+    if k == "new":
+        raise RuntimeError("分区最新投稿接口 B站 已经关了（-404），现在只能看 top10。")
+    from bilibili_api import video_zone as bzone
+
+    res = await bzone.get_zone_top10(int(tid), day=7)
+    items = res or []
+    if not items:
+        return "这个分区没有排行。"
+    return "\n".join(
+        f"{x.get('bvid')} | {x.get('title')} | UP {x.get('author')} | 播放 {x.get('play')}"
+        for x in items[:20]
+    )
+
+
+async def tool_rank_videos(limit: int = 10) -> str:
+    """全站排行榜。"""
+    from bilibili_api import rank as brank
+
+    res = await brank.get_rank()
+    items = (res or {}).get("list") or []
+    if not items:
+        return "现在没有排行榜。"
+    return "\n".join(
+        f"{x.get('bvid') or x.get('aid')} | {x.get('title')} | UP {((x.get('owner') or {}).get('name'))}"
+        for x in items[: max(1, int(limit or 10))]
+    )
+
+
+async def tool_list_emoji(package_id: int = 0) -> str:
+    """列 B站 官方表情包。不给 package_id 就列包；给 package_id 就列这个包里的表情。"""
+    cred = _cred()
+    from bilibili_api import emoji as bemoji
+
+    if int(package_id):
+        res = await bemoji.get_emoji_detail(int(package_id), "reply")
+        pkgs = (res or {}).get("packages") or []
+        lines = []
+        for p in pkgs:
+            for e in (p.get("emote") or [])[:80]:
+                lines.append(f"{e.get('text')}")
+        return "\n".join(lines) if lines else "这个包里没有表情。"
+    res = await bemoji.get_emoji_list("reply", cred)
+    pkgs = (res or {}).get("packages") or []
+    if not pkgs:
+        return "拿不到表情包列表。"
+    return "\n".join(f"{p.get('id')} | {p.get('text')}" for p in pkgs[:60])
 
 
 # ---------------------------------------------------------------- 工具表
@@ -1166,14 +1914,22 @@ TOOLS = [
     ),
     (
         "send_dynamic",
-        "发一条动态（正文自己写，就这一件事）",
-        {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
-        lambda a: tool_send_dynamic(a.get("text") or ""),
+        "发一条动态（正文自己写；可以带话题和 @）",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "topic_id": {"type": "integer"},
+                "at_uids": {"type": "array", "items": {"type": "integer"}},
+            },
+            "required": ["text"],
+        },
+        lambda a: tool_send_dynamic(a.get("text") or "", int(a.get("topic_id") or 0), a.get("at_uids") or []),
     ),
     (
         "delete_dynamic",
         "删掉自己的一条动态（给 dyn_id）",
-        {"type": "object", "properties": {"dyn_id": {"type": "integer"}}, "required": ["dyn_id"]},
+        {"type": "object", "properties": {"dyn_id": {"type": ["integer", "string"]}}, "required": ["dyn_id"]},
         lambda a: tool_delete_dynamic(int(a.get("dyn_id") or 0)),
     ),
     (
@@ -1185,6 +1941,272 @@ TOOLS = [
             "required": ["oid", "rpid"],
         },
         lambda a: tool_delete_comment(int(a.get("oid") or 0), int(a.get("rpid") or 0)),
+    ),
+    (
+        "comment_dynamic",
+        "回复动态里的评论（dyn_id 是动态 id，rpid 是要回复的评论 id）",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "dyn_id": {"type": ["integer", "string"]},
+                "rpid": {"type": "integer"},
+                "root": {"type": "integer"},
+            },
+            "required": ["text", "dyn_id"],
+        },
+        lambda a: tool_comment_dynamic(
+            a.get("text") or "", int(a.get("dyn_id") or 0), int(a.get("rpid") or 0), int(a.get("root") or 0)
+        ),
+    ),
+    (
+        "read_dynamic_comment",
+        "读动态的评论（dyn_id 是动态 id，rpid/root 是要读的评论或楼层）",
+        {
+            "type": "object",
+            "properties": {
+                "dyn_id": {"type": ["integer", "string"]},
+                "rpid": {"type": "integer"},
+                "root": {"type": "integer"},
+                "pn": {"type": "integer"},
+                "ps": {"type": "integer"},
+            },
+            "required": ["dyn_id"],
+        },
+        lambda a: tool_read_dynamic_comment(
+            int(a.get("dyn_id") or 0),
+            int(a.get("rpid") or 0),
+            int(a.get("root") or 0),
+            int(a.get("pn") or 1),
+            int(a.get("ps") or 20),
+        ),
+    ),
+    (
+        "list_stickers",
+        "列出本地表情库里的表情（文件名就是意思）",
+        {"type": "object", "properties": {"keyword": {"type": "string"}}},
+        lambda a: tool_list_stickers(a.get("keyword") or ""),
+    ),
+    (
+        "send_sticker",
+        "发一张本地表情（target: comment / dm / dynamic）",
+        {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "target": {"type": "string"},
+                "oid": {"type": "integer"},
+                "rpid": {"type": "integer"},
+                "root": {"type": "integer"},
+                "dyn_id": {"type": ["integer", "string"]},
+                "uid": {"type": "integer"},
+                "text": {"type": "string"},
+            },
+            "required": ["name"],
+        },
+        lambda a: tool_send_sticker(
+            a.get("name") or "",
+            a.get("target") or "comment",
+            int(a.get("oid") or 0),
+            int(a.get("rpid") or 0),
+            int(a.get("root") or 0),
+            int(a.get("dyn_id") or 0),
+            int(a.get("uid") or 0),
+            a.get("text") or "",
+        ),
+    ),
+    (
+        "read_subtitle",
+        "读视频字幕的前 N 个字（默认 500 字）",
+        {
+            "type": "object",
+            "properties": {"bvid": {"type": "string"}, "oid": {"type": "integer"}, "chars": {"type": "integer"}},
+        },
+        lambda a: tool_read_subtitle(a.get("bvid") or "", int(a.get("oid") or 0), int(a.get("chars") or 500)),
+    ),
+    (
+        "read_subtitle_all",
+        "读视频的全部字幕",
+        {"type": "object", "properties": {"bvid": {"type": "string"}, "oid": {"type": "integer"}}},
+        lambda a: tool_read_subtitle_all(a.get("bvid") or "", int(a.get("oid") or 0)),
+    ),
+    (
+        "read_video_ai",
+        "读视频的 AI 总结",
+        {"type": "object", "properties": {"bvid": {"type": "string"}, "oid": {"type": "integer"}}},
+        lambda a: tool_read_video_ai(a.get("bvid") or "", int(a.get("oid") or 0)),
+    ),
+    (
+        "list_danmakus",
+        "读视频的弹幕（时间 + 内容）",
+        {
+            "type": "object",
+            "properties": {"bvid": {"type": "string"}, "oid": {"type": "integer"}, "limit": {"type": "integer"}},
+        },
+        lambda a: tool_list_danmakus(a.get("bvid") or "", int(a.get("oid") or 0), int(a.get("limit") or 50)),
+    ),
+    (
+        "send_danmaku",
+        "发一条弹幕（progress 是毫秒位置，mode 1=滚动 4=底部 5=顶部）",
+        {
+            "type": "object",
+            "properties": {
+                "bvid": {"type": "string"},
+                "oid": {"type": "integer"},
+                "text": {"type": "string"},
+                "progress": {"type": "integer"},
+                "mode": {"type": "integer"},
+            },
+            "required": ["text"],
+        },
+        lambda a: tool_send_danmaku(
+            a.get("bvid") or "",
+            int(a.get("oid") or 0),
+            a.get("text") or "",
+            int(a.get("progress") or 0),
+            int(a.get("mode") or 1),
+        ),
+    ),
+    (
+        "list_related",
+        "列一个视频的相关推荐",
+        {
+            "type": "object",
+            "properties": {"bvid": {"type": "string"}, "oid": {"type": "integer"}, "limit": {"type": "integer"}},
+        },
+        lambda a: tool_list_related(a.get("bvid") or "", int(a.get("oid") or 0), int(a.get("limit") or 10)),
+    ),
+    (
+        "add_to_toview",
+        "把视频加进稍后再看；undo=True 就移出来",
+        {
+            "type": "object",
+            "properties": {"bvid": {"type": "string"}, "oid": {"type": "integer"}, "undo": {"type": "boolean"}},
+        },
+        lambda a: tool_add_to_toview(a.get("bvid") or "", int(a.get("oid") or 0), bool(a.get("undo"))),
+    ),
+    (
+        "list_toview",
+        "列稍后再看",
+        {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        lambda a: tool_list_toview(int(a.get("limit") or 20)),
+    ),
+    (
+        "list_user_dynamics",
+        "看某个人最近发的动态",
+        {
+            "type": "object",
+            "properties": {"uid": {"type": "integer"}, "limit": {"type": "integer"}},
+            "required": ["uid"],
+        },
+        lambda a: tool_list_user_dynamics(int(a.get("uid") or 0), int(a.get("limit") or 10)),
+    ),
+    (
+        "list_following_dynamics",
+        "看关注的人最新动态",
+        {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        lambda a: tool_list_following_dynamics(int(a.get("limit") or 10)),
+    ),
+    (
+        "repost_dynamic",
+        "转发一条动态",
+        {
+            "type": "object",
+            "properties": {"dyn_id": {"type": ["integer", "string"]}, "text": {"type": "string"}},
+            "required": ["dyn_id"],
+        },
+        lambda a: tool_repost_dynamic(int(a.get("dyn_id") or 0), a.get("text") or ""),
+    ),
+    (
+        "like_dynamic",
+        "给动态点赞；undo=True 取消",
+        {
+            "type": "object",
+            "properties": {"dyn_id": {"type": ["integer", "string"]}, "undo": {"type": "boolean"}},
+            "required": ["dyn_id"],
+        },
+        lambda a: tool_like_dynamic(int(a.get("dyn_id") or 0), bool(a.get("undo"))),
+    ),
+    (
+        "favorite_dynamic",
+        "收藏动态；undo=True 取消",
+        {
+            "type": "object",
+            "properties": {"dyn_id": {"type": ["integer", "string"]}, "undo": {"type": "boolean"}},
+            "required": ["dyn_id"],
+        },
+        lambda a: tool_favorite_dynamic(int(a.get("dyn_id") or 0), bool(a.get("undo"))),
+    ),
+    (
+        "name_to_uid",
+        "B站用户名转 uid",
+        {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
+        lambda a: tool_name_to_uid(a.get("name") or ""),
+    ),
+    (
+        "self_info",
+        "看自己账号的数据",
+        {"type": "object", "properties": {}},
+        lambda a: tool_self_info(),
+    ),
+    (
+        "up_stat",
+        "看一个 UP 主的数据",
+        {"type": "object", "properties": {"uid": {"type": "integer"}}, "required": ["uid"]},
+        lambda a: tool_up_stat(int(a.get("uid") or 0)),
+    ),
+    (
+        "search_other",
+        "搜视频以外的东西：type 用 user / article / bangumi / live / topic",
+        {
+            "type": "object",
+            "properties": {"keyword": {"type": "string"}, "type": {"type": "string"}},
+            "required": ["keyword"],
+        },
+        lambda a: tool_search_other(a.get("keyword") or "", a.get("type") or "user"),
+    ),
+    (
+        "hot_search",
+        "B站热搜词",
+        {"type": "object", "properties": {}},
+        lambda a: tool_hot_search(),
+    ),
+    (
+        "homepage_videos",
+        "首页推荐视频",
+        {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        lambda a: tool_homepage_videos(int(a.get("limit") or 10)),
+    ),
+    (
+        "hot_videos",
+        "热门视频（kind=hot 热门 / weekly 每周必看）",
+        {
+            "type": "object",
+            "properties": {"kind": {"type": "string"}, "limit": {"type": "integer"}},
+        },
+        lambda a: tool_hot_videos(a.get("kind") or "hot", int(a.get("limit") or 10)),
+    ),
+    (
+        "zone_videos",
+        "分区排行（给 tid）",
+        {
+            "type": "object",
+            "properties": {"tid": {"type": "integer"}, "kind": {"type": "string"}},
+            "required": ["tid"],
+        },
+        lambda a: tool_zone_videos(int(a.get("tid") or 0), a.get("kind") or "top10"),
+    ),
+    (
+        "rank_videos",
+        "全站排行榜",
+        {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        lambda a: tool_rank_videos(int(a.get("limit") or 10)),
+    ),
+    (
+        "list_emoji",
+        "列官方表情包；给 package_id 列包里的表情",
+        {"type": "object", "properties": {"package_id": {"type": "integer"}}},
+        lambda a: tool_list_emoji(int(a.get("package_id") or 0)),
     ),
 ]
 

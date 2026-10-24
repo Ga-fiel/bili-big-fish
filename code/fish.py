@@ -321,6 +321,7 @@ def _parse(it: dict, kind: str) -> dict | None:
         "text": text[:800],
         "root_text": (inner.get("root_reply_content") or "")[:300],
         "uri": uri,
+        "business_id": int(inner.get("business_id") or it.get("business_id") or 0),
         "bvid": _bvid_of(uri),
         "ts": int(it.get("at_time") or it.get("reply_time") or 0),
     }
@@ -762,11 +763,11 @@ def wake(cfg: dict, prompt: str, why: str) -> bool:
 
 
 def prompt_for(kind: str) -> str:
-    head = "读 IDENTITY.md、DUTY.md、TOOLS.md，"
+    head = "读 IDENTITY.md、DUTY.md、TOOLS/00-目录和任务包.md（工具按目录挑，别整份读），"
     if kind == "scan":
         return head + "然后看 inbox 里最新的任务包（scan）。这是你自己的时间：想清楚今天想看什么，自己搜、自己看，看完自己决定说不说话。做完用一两句话说你干了什么。"
     if kind == "diary":
-        return head + "然后看 inbox 里最新的任务包（diary），整理记忆写日记。做完用一两句话说你干了什么。"
+        return head + "然后看 inbox 里最新的任务包（diary）。整理今日的日记，删除或者压缩精简，和主人有关的只能压缩不可删除。整理完发一条动态说说——不强制主题但是要写。做完用一两句话说你干了什么。"
     return head + "然后看 inbox 里最新的任务包（messages），按你的判断处理里面的消息。做完用一两句话说你干了什么。"
 
 
